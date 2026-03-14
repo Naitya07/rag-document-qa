@@ -1,6 +1,6 @@
 """RAG Document Q&A — Streamlit App.
 
-Upload documents (PDF, DOCX, PPTX, TXT, CSV), ask questions, get answers with citations.
+Upload any document, image, audio, or video — ask questions, get answers with citations.
 Uses local Ollama for generation, sentence-transformers for embeddings,
 ChromaDB for vector storage, and cross-encoder for reranking.
 """
@@ -11,7 +11,11 @@ from rag.chunker import extract_text, chunk_pages
 from rag.retriever import index_chunks, retrieve, get_collection
 from rag.generator import generate_answer
 
-SUPPORTED_TYPES = ["pdf", "docx", "pptx", "txt", "csv"]
+SUPPORTED_TYPES = [
+    "pdf", "docx", "pptx", "txt", "csv", "md", "html", "htm", "json",
+    "png", "jpg", "jpeg", "webp",
+    "mp3", "wav", "mp4", "mov", "webm", "m4a",
+]
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(page_title="RAG Document Q&A", page_icon="📄", layout="wide")
@@ -22,7 +26,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader(
         "Choose a file",
         type=SUPPORTED_TYPES,
-        help="Supported: PDF, DOCX, PPTX, TXT, CSV",
+        help="Documents, images, audio, video — we handle it all",
     )
 
     if uploaded_file:
@@ -50,8 +54,13 @@ with st.sidebar:
         st.caption(f"**Chunks:** {st.session_state['num_chunks']}")
 
     st.divider()
-    st.markdown("**Supported formats:** PDF, DOCX, PPTX, TXT, CSV")
-    st.caption("Built with Ollama + ChromaDB + Streamlit")
+    st.markdown(
+        "**Supported:**  \n"
+        "Docs: PDF, DOCX, PPTX, TXT, MD, CSV, HTML, JSON  \n"
+        "Images: PNG, JPG, WEBP (OCR)  \n"
+        "Media: MP3, WAV, MP4, MOV (transcription)"
+    )
+    st.caption("Built with Ollama + ChromaDB + Whisper + Streamlit")
 
 # ── Main area ────────────────────────────────────────────────
 st.title("📄 RAG Document Q&A")
