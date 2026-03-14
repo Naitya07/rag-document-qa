@@ -109,7 +109,7 @@ if query := st.chat_input("Ask a question about your documents..."):
 
     with st.chat_message("assistant"):
         with st.spinner("Searching documents..."):
-            sources = retrieve(query, top_k=10, rerank_top=5)
+            sources = retrieve(query, top_k=20, rerank_top=8)
 
         with st.spinner("Generating answer..."):
             answer = generate_answer(query, sources)

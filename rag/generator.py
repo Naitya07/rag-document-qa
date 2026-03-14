@@ -12,8 +12,9 @@ def generate_answer(query: str, context_chunks: list[dict], model: str = DEFAULT
         f"[{c.get('source', 'doc')} — Section {c['page']}] {c['text']}" for c in context_chunks
     )
 
-    prompt = f"""You are a helpful document assistant. Answer the question based ONLY on the provided context.
-If the context doesn't contain enough information, say "I don't have enough information to answer that."
+    prompt = f"""You are a helpful document assistant. Answer the question based on the provided context.
+Use the context to give the best possible answer. For broad questions like "what is this about" or "summarize",
+provide an overview based on all the context you can see.
 Always cite the source file name and section number you used.
 
 Context:
