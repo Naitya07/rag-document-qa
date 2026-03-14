@@ -1,8 +1,10 @@
 """RAG Document Q&A — Streamlit App.
 
 Upload any document, image, audio, or video — ask questions, get answers with citations.
+Supports multiple workspaces to work on different document sets simultaneously.
 """
 
+import re
 import streamlit as st
 
 from rag.chunker import extract_text, chunk_pages
@@ -21,18 +23,15 @@ st.set_page_config(page_title="DocQ — Ask Your Documents", page_icon="🔮", l
 # ── Custom CSS ───────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* Hide default streamlit branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
 
-    /* Main container */
     .block-container {
         padding-top: 2rem;
         padding-bottom: 2rem;
     }
 
-    /* Hero title */
     .hero-title {
         font-size: 2.8rem;
         font-weight: 800;
@@ -43,7 +42,6 @@ st.markdown("""
         margin-bottom: 0.2rem;
         letter-spacing: -1px;
     }
-
     .hero-subtitle {
         text-align: center;
         color: #888;
@@ -51,7 +49,6 @@ st.markdown("""
         margin-bottom: 2rem;
     }
 
-    /* Stat cards */
     .stat-card {
         background: linear-gradient(135deg, #1e1e2e, #2a2a3e);
         border: 1px solid #333;
@@ -71,19 +68,6 @@ st.markdown("""
         letter-spacing: 1px;
     }
 
-    /* File pills in sidebar */
-    .file-pill {
-        background: #2a2a3e;
-        border: 1px solid #333;
-        border-radius: 8px;
-        padding: 4px 10px;
-        margin: 2px 0;
-        font-size: 0.75rem;
-        color: #ccc;
-        display: inline-block;
-    }
-
-    /* Source cards */
     .source-card {
         background: #1a1d23;
         border-left: 3px solid #6C63FF;
@@ -107,11 +91,9 @@ st.markdown("""
         margin-top: 4px;
     }
 
-    /* Sidebar styling */
     [data-testid="stSidebar"] {
         background: #12141a;
     }
-
     .sidebar-header {
         font-size: 1.1rem;
         font-weight: 700;
@@ -119,7 +101,6 @@ st.markdown("""
         margin-bottom: 0.5rem;
     }
 
-    /* Format badges */
     .format-grid {
         display: flex;
         flex-wrap: wrap;
@@ -138,7 +119,6 @@ st.markdown("""
     .format-badge-img { border-color: #48C6EF; color: #48C6EF; }
     .format-badge-media { border-color: #FF6B6B; color: #FF6B6B; }
 
-    /* Landing cards */
     .feature-card {
         background: linear-gradient(135deg, #1e1e2e, #2a2a3e);
         border: 1px solid #333;
@@ -147,30 +127,102 @@ st.markdown("""
         text-align: center;
         height: 100%;
     }
-    .feature-icon {
-        font-size: 2rem;
-        margin-bottom: 0.5rem;
+    .feature-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+    .feature-title { font-weight: 600; color: #fff; margin-bottom: 0.3rem; }
+    .feature-desc { color: #888; font-size: 0.85rem; }
+
+    .ws-card {
+        background: linear-gradient(135deg, #1e1e2e, #2a2a3e);
+        border: 1px solid #333;
+        border-radius: 10px;
+        padding: 0.6rem 0.8rem;
+        margin: 4px 0;
     }
-    .feature-title {
+    .ws-card-active {
+        border-color: #6C63FF;
+        background: linear-gradient(135deg, #1e1e3e, #2a2a4e);
+    }
+    .ws-name {
         font-weight: 600;
         color: #fff;
-        margin-bottom: 0.3rem;
+        font-size: 0.9rem;
     }
-    .feature-desc {
+    .ws-meta {
         color: #888;
-        font-size: 0.85rem;
+        font-size: 0.7rem;
     }
 
-    /* Chat messages */
-    .stChatMessage {
-        border-radius: 12px;
-    }
+    .stChatMessage { border-radius: 12px; }
 </style>
 """, unsafe_allow_html=True)
 
+
+# ── Workspace helpers ────────────────────────────────────────
+def _safe_collection_name(name: str) -> str:
+    """Convert workspace name to a valid ChromaDB collection name."""
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+    safe = re.sub(r"_+", "_", safe).strip("_-")
+    if not safe or not safe[0].isalpha():
+        safe = "ws_" + safe
+    return safe[:63]  # ChromaDB max 63 chars
+
+
+if "workspaces" not in st.session_state:
+    st.session_state["workspaces"] = {}  # {name: {doc_names, num_chunks, num_pages, messages, collection}}
+if "active_ws" not in st.session_state:
+    st.session_state["active_ws"] = None
+
+
+def get_ws():
+    """Get active workspace data or None."""
+    name = st.session_state.get("active_ws")
+    if name and name in st.session_state["workspaces"]:
+        return st.session_state["workspaces"][name]
+    return None
+
+
 # ── Sidebar ──────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown('<div class="sidebar-header">Upload Documents</div>', unsafe_allow_html=True)
+    # ── Workspace selector ───────────────────────────────────
+    st.markdown('<div class="sidebar-header">Workspaces</div>', unsafe_allow_html=True)
+
+    ws_names = list(st.session_state["workspaces"].keys())
+
+    if ws_names:
+        for ws_name in ws_names:
+            ws_data = st.session_state["workspaces"][ws_name]
+            is_active = ws_name == st.session_state.get("active_ws")
+            card_class = "ws-card ws-card-active" if is_active else "ws-card"
+            file_count = len(ws_data["doc_names"])
+            chunk_count = ws_data["num_chunks"]
+
+            col_btn, col_del = st.columns([5, 1])
+            with col_btn:
+                if st.button(
+                    f"{'▸ ' if is_active else ''}{ws_name}",
+                    key=f"ws_switch_{ws_name}",
+                    use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                ):
+                    st.session_state["active_ws"] = ws_name
+                    st.rerun()
+            with col_del:
+                if st.button("✕", key=f"ws_del_{ws_name}", help=f"Delete {ws_name}"):
+                    del st.session_state["workspaces"][ws_name]
+                    if st.session_state["active_ws"] == ws_name:
+                        remaining = list(st.session_state["workspaces"].keys())
+                        st.session_state["active_ws"] = remaining[0] if remaining else None
+                    st.rerun()
+
+            if is_active:
+                st.caption(f"  {file_count} files • {chunk_count} chunks")
+
+    st.divider()
+
+    # ── Create new workspace ─────────────────────────────────
+    st.markdown('<div class="sidebar-header">New Workspace</div>', unsafe_allow_html=True)
+
+    new_ws_name = st.text_input("Workspace name", placeholder="e.g. Lecture Notes", label_visibility="collapsed")
 
     uploaded_files = st.file_uploader(
         "Drop files here",
@@ -179,10 +231,11 @@ with st.sidebar:
         label_visibility="collapsed",
     )
 
-    if uploaded_files:
+    if uploaded_files and new_ws_name:
         st.caption(f"**{len(uploaded_files)}** file(s) selected")
-        if st.button("Process All Files", type="primary", use_container_width=True):
-            reset_collection()
+        if st.button("Create Workspace", type="primary", use_container_width=True):
+            collection_name = _safe_collection_name(new_ws_name)
+            reset_collection(collection_name)
             total_chunks = 0
             total_sections = 0
             file_names = []
@@ -192,29 +245,38 @@ with st.sidebar:
                 name = uploaded_file.name
                 file_names.append(name)
                 progress.progress(
-                    (i) / len(uploaded_files),
+                    i / len(uploaded_files),
                     text=f"Processing **{name}**...",
                 )
                 pages = extract_text(uploaded_file.read(), name)
                 chunks = chunk_pages(pages, chunk_size=300, overlap=50)
-                n = index_chunks(chunks, filename=name)
+                n = index_chunks(chunks, filename=name, collection_name=collection_name)
                 total_chunks += n
                 total_sections += len(pages)
 
-            progress.progress(1.0, text="All files processed!")
+            progress.progress(1.0, text="Done!")
 
-            st.session_state["doc_ready"] = True
-            st.session_state["doc_names"] = file_names
-            st.session_state["num_chunks"] = total_chunks
-            st.session_state["num_pages"] = total_sections
-            st.session_state["messages"] = []
+            st.session_state["workspaces"][new_ws_name] = {
+                "doc_names": file_names,
+                "num_chunks": total_chunks,
+                "num_pages": total_sections,
+                "messages": [],
+                "collection": collection_name,
+            }
+            st.session_state["active_ws"] = new_ws_name
+            st.rerun()
 
-    if st.session_state.get("doc_ready"):
-        st.divider()
-        names = st.session_state["doc_names"]
-        st.markdown(f"**{len(names)} files loaded**")
-        with st.expander(f"View all files", expanded=False):
-            for name in names:
+    elif uploaded_files and not new_ws_name:
+        st.warning("Give your workspace a name first")
+
+    st.divider()
+
+    # ── Active workspace files ───────────────────────────────
+    ws = get_ws()
+    if ws:
+        st.markdown(f"**{len(ws['doc_names'])} files in \"{st.session_state['active_ws']}\"**")
+        with st.expander("View all files", expanded=False):
+            for name in ws["doc_names"]:
                 ext = name.rsplit(".", 1)[-1].lower()
                 if ext in ("png", "jpg", "jpeg", "webp"):
                     badge = "format-badge format-badge-img"
@@ -223,9 +285,9 @@ with st.sidebar:
                 else:
                     badge = "format-badge format-badge-doc"
                 st.markdown(f'<span class="{badge}">{ext.upper()}</span> {name}', unsafe_allow_html=True)
+        st.divider()
 
-    st.divider()
-
+    # ── Supported formats ────────────────────────────────────
     st.markdown("**Supported Formats**")
     st.markdown("""
     <div class="format-grid">
@@ -250,8 +312,11 @@ with st.sidebar:
     st.divider()
     st.caption("Built for COMP-4400 — University of Windsor")
 
+
 # ── Main area ────────────────────────────────────────────────
-if not st.session_state.get("doc_ready"):
+ws = get_ws()
+
+if not ws:
     # Landing page
     st.markdown('<div class="hero-title">DocQ</div>', unsafe_allow_html=True)
     st.markdown('<div class="hero-subtitle">Ask questions about any document, image, or video — powered by local AI</div>', unsafe_allow_html=True)
@@ -285,15 +350,14 @@ if not st.session_state.get("doc_ready"):
         st.markdown("""
         <div class="feature-card">
             <div class="feature-icon">🔍</div>
-            <div class="feature-title">Smart Search</div>
-            <div class="feature-desc">Vector search + cross-encoder reranking for accuracy</div>
+            <div class="feature-title">Multi-Workspace</div>
+            <div class="feature-desc">Work on 4-5 different document sets at the same time</div>
         </div>
         """, unsafe_allow_html=True)
 
     st.markdown("")
     st.markdown("")
 
-    # Architecture diagram
     with st.expander("How it works — Architecture", expanded=False):
         st.code("""
     File Upload → Text Extraction / OCR / Transcription
@@ -302,7 +366,7 @@ if not st.session_state.get("doc_ready"):
                         ↓
                   Embedding (sentence-transformers)
                         ↓
-                  Vector Store (ChromaDB)
+                  Vector Store (ChromaDB) ← one collection per workspace
                         ↓
     User Query → Query Embedding → Vector Search → Cross-Encoder Rerank
                                                         ↓
@@ -311,40 +375,48 @@ if not st.session_state.get("doc_ready"):
                                               Answer with Source Citations
         """, language=None)
 
-    st.info("👈 Upload files in the sidebar to get started")
+    st.info("👈 Name a workspace, upload files, and click **Create Workspace** to get started")
     st.stop()
 
-# ── Stats bar ────────────────────────────────────────────────
-col1, col2, col3 = st.columns(3)
+# ── Active workspace view ────────────────────────────────────
+active_name = st.session_state["active_ws"]
+collection_name = ws["collection"]
+
+# Stats bar
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.markdown(f"""
     <div class="stat-card">
-        <div class="stat-number">{len(st.session_state['doc_names'])}</div>
-        <div class="stat-label">Files Loaded</div>
+        <div class="stat-number">{len(st.session_state['workspaces'])}</div>
+        <div class="stat-label">Workspaces</div>
     </div>
     """, unsafe_allow_html=True)
 with col2:
     st.markdown(f"""
     <div class="stat-card">
-        <div class="stat-number">{st.session_state['num_pages']}</div>
-        <div class="stat-label">Sections</div>
+        <div class="stat-number">{len(ws['doc_names'])}</div>
+        <div class="stat-label">Files</div>
     </div>
     """, unsafe_allow_html=True)
 with col3:
     st.markdown(f"""
     <div class="stat-card">
-        <div class="stat-number">{st.session_state['num_chunks']}</div>
-        <div class="stat-label">Chunks Indexed</div>
+        <div class="stat-number">{ws['num_pages']}</div>
+        <div class="stat-label">Sections</div>
+    </div>
+    """, unsafe_allow_html=True)
+with col4:
+    st.markdown(f"""
+    <div class="stat-card">
+        <div class="stat-number">{ws['num_chunks']}</div>
+        <div class="stat-label">Chunks</div>
     </div>
     """, unsafe_allow_html=True)
 
 st.markdown("")
 
 # ── Chat history ─────────────────────────────────────────────
-if "messages" not in st.session_state:
-    st.session_state["messages"] = []
-
-for msg in st.session_state["messages"]:
+for msg in ws["messages"]:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if msg.get("sources"):
@@ -362,14 +434,14 @@ for msg in st.session_state["messages"]:
                     """, unsafe_allow_html=True)
 
 # ── Chat input ───────────────────────────────────────────────
-if query := st.chat_input("Ask anything about your documents..."):
-    st.session_state["messages"].append({"role": "user", "content": query})
+if query := st.chat_input(f"Ask about \"{active_name}\"..."):
+    ws["messages"].append({"role": "user", "content": query})
     with st.chat_message("user"):
         st.markdown(query)
 
     with st.chat_message("assistant"):
         with st.spinner("🔍 Searching across all documents..."):
-            sources = retrieve(query, top_k=20, rerank_top=8)
+            sources = retrieve(query, top_k=20, rerank_top=8, collection_name=collection_name)
 
         with st.spinner("💭 Generating answer..."):
             answer = generate_answer(query, sources)
@@ -390,7 +462,7 @@ if query := st.chat_input("Ask anything about your documents..."):
                     </div>
                     """, unsafe_allow_html=True)
 
-    st.session_state["messages"].append({
+    ws["messages"].append({
         "role": "assistant",
         "content": answer,
         "sources": sources,
