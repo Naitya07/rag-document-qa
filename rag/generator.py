@@ -9,12 +9,12 @@ DEFAULT_MODEL = "llama3.2"
 def generate_answer(query: str, context_chunks: list[dict], model: str = DEFAULT_MODEL) -> str:
     """Send query + retrieved context to Ollama and return the answer."""
     context = "\n\n".join(
-        f"[Page {c['page']}] {c['text']}" for c in context_chunks
+        f"[{c.get('source', 'doc')} — Section {c['page']}] {c['text']}" for c in context_chunks
     )
 
     prompt = f"""You are a helpful document assistant. Answer the question based ONLY on the provided context.
 If the context doesn't contain enough information, say "I don't have enough information to answer that."
-Always cite the page numbers you used.
+Always cite the source file name and section number you used.
 
 Context:
 {context}

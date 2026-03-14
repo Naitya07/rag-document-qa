@@ -8,7 +8,7 @@ ChromaDB for vector storage, and cross-encoder for reranking.
 import streamlit as st
 
 from rag.chunker import extract_text, chunk_pages
-from rag.retriever import index_chunks, retrieve, get_collection
+from rag.retriever import index_chunks, retrieve, reset_collection
 from rag.generator import generate_answer
 
 SUPPORTED_TYPES = [
@@ -22,34 +22,51 @@ st.set_page_config(page_title="RAG Document Q&A", page_icon="📄", layout="wide
 
 # ── Sidebar: document upload ────────────────────────────────
 with st.sidebar:
-    st.header("📄 Upload Document")
-    uploaded_file = st.file_uploader(
-        "Choose a file",
+    st.header("📄 Upload Documents")
+    uploaded_files = st.file_uploader(
+        "Choose files",
         type=SUPPORTED_TYPES,
-        help="Documents, images, audio, video — we handle it all",
+        accept_multiple_files=True,
+        help="Upload one or many — documents, images, audio, video",
     )
 
-    if uploaded_file:
-        if st.button("Process Document", type="primary", use_container_width=True):
-            with st.spinner("Parsing document..."):
-                pages = extract_text(uploaded_file.read(), uploaded_file.name)
+    if uploaded_files:
+        st.caption(f"{len(uploaded_files)} file(s) selected")
+        if st.button("Process All Files", type="primary", use_container_width=True):
+            reset_collection()
+            total_chunks = 0
+            total_sections = 0
+            file_names = []
 
-            with st.spinner("Chunking text..."):
+            progress = st.progress(0, text="Starting...")
+            for i, uploaded_file in enumerate(uploaded_files):
+                name = uploaded_file.name
+                file_names.append(name)
+                progress.progress(
+                    (i) / len(uploaded_files),
+                    text=f"Processing {name}...",
+                )
+
+                pages = extract_text(uploaded_file.read(), name)
                 chunks = chunk_pages(pages, chunk_size=300, overlap=50)
+                n = index_chunks(chunks, filename=name)
+                total_chunks += n
+                total_sections += len(pages)
 
-            with st.spinner("Embedding & indexing..."):
-                n = index_chunks(chunks)
+            progress.progress(1.0, text="Done!")
 
             st.session_state["doc_ready"] = True
-            st.session_state["doc_name"] = uploaded_file.name
-            st.session_state["num_chunks"] = n
-            st.session_state["num_pages"] = len(pages)
+            st.session_state["doc_names"] = file_names
+            st.session_state["num_chunks"] = total_chunks
+            st.session_state["num_pages"] = total_sections
             st.session_state["messages"] = []
-            st.success(f"Indexed **{n} chunks** from **{len(pages)} sections**")
+            st.success(f"Indexed **{total_chunks} chunks** from **{len(file_names)} file(s)**")
 
     if st.session_state.get("doc_ready"):
         st.divider()
-        st.caption(f"**Document:** {st.session_state['doc_name']}")
+        st.caption(f"**Files:** {len(st.session_state['doc_names'])}")
+        for name in st.session_state["doc_names"]:
+            st.caption(f"  - {name}")
         st.caption(f"**Sections:** {st.session_state['num_pages']}")
         st.caption(f"**Chunks:** {st.session_state['num_chunks']}")
 
@@ -64,10 +81,10 @@ with st.sidebar:
 
 # ── Main area ────────────────────────────────────────────────
 st.title("📄 RAG Document Q&A")
-st.markdown("Upload a document in the sidebar, then ask questions about it.")
+st.markdown("Upload files in the sidebar, then ask questions about them.")
 
 if not st.session_state.get("doc_ready"):
-    st.info("👈 Upload and process a document to get started.")
+    st.info("👈 Upload and process files to get started.")
     st.stop()
 
 # ── Chat history ─────────────────────────────────────────────
@@ -80,17 +97,18 @@ for msg in st.session_state["messages"]:
         if msg.get("sources"):
             with st.expander("📚 Sources"):
                 for src in msg["sources"]:
-                    st.markdown(f"**Section {src['page']}** (relevance: {src['score']:.2f})")
+                    label = f"**{src['source']}** — Section {src['page']}" if src.get("source") else f"**Section {src['page']}**"
+                    st.markdown(f"{label} (relevance: {src['score']:.2f})")
                     st.caption(src["text"][:300] + "..." if len(src["text"]) > 300 else src["text"])
 
 # ── Chat input ───────────────────────────────────────────────
-if query := st.chat_input("Ask a question about your document..."):
+if query := st.chat_input("Ask a question about your documents..."):
     st.session_state["messages"].append({"role": "user", "content": query})
     with st.chat_message("user"):
         st.markdown(query)
 
     with st.chat_message("assistant"):
-        with st.spinner("Searching document..."):
+        with st.spinner("Searching documents..."):
             sources = retrieve(query, top_k=10, rerank_top=5)
 
         with st.spinner("Generating answer..."):
@@ -101,7 +119,8 @@ if query := st.chat_input("Ask a question about your document..."):
         if sources:
             with st.expander("📚 Sources"):
                 for src in sources:
-                    st.markdown(f"**Section {src['page']}** (relevance: {src['score']:.2f})")
+                    label = f"**{src['source']}** — Section {src['page']}" if src.get("source") else f"**Section {src['page']}**"
+                    st.markdown(f"{label} (relevance: {src['score']:.2f})")
                     st.caption(src["text"][:300] + "..." if len(src["text"]) > 300 else src["text"])
 
     st.session_state["messages"].append({
